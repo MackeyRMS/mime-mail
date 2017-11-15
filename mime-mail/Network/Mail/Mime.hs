@@ -164,8 +164,11 @@ partToPair (Part contentType encoding disposition headers content) =
       $ (case disposition of
             Nothing -> id
             Just fn ->
-                (:) ("Content-Disposition", "attachment; filename="
-                                            `T.append` fn))
+                case lookup "Content-Disposition" headers of
+                  Nothing -> 
+                    (:) ("Content-Disposition", "attachment; filename="
+                                                `T.append` fn)
+                  Just _ -> id)
       $ headers
     builder =
         case encoding of
@@ -489,9 +492,14 @@ addAttachmentBSCid ct fn content cid mail =
     let part = addHeader $ getAttachmentPartBS ct fn content
     in addPart [part] mail
     where
-      addHeader part = part { partHeaders = header:ph }
+      addHeader part = part { 
+          partHeaders = headers <> ph 
+        }
         where ph = partHeaders part
-      header = ("Content-ID", T.concat ["<", cid, ">"])
+      headers = [
+          ("Content-ID", T.concat ["<", cid, ">"])
+        , ("Content-Disposition", "inline; filename=" `T.append` fn)
+        ]
 
 -- |
 -- Since 0.4.7
