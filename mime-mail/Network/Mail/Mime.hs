@@ -29,6 +29,7 @@ module Network.Mail.Mime
     , addAttachment
     , addAttachments
     , addAttachmentBS
+    , addAttachmentBSCid
     , addAttachmentsBS
     , renderAddress
     , htmlPart
@@ -155,7 +156,7 @@ data PartContent = PartContent L.ByteString | NestedParts [Part]
   deriving (Eq, Show)
 
 data Disposition = AttachmentDisposition Text
-                 | InlineDisposition Text
+                 | InlineDisposition Text (Maybe Text) -- content-id, maybe filename
                  | DefaultDisposition
                  deriving (Show, Eq)
 
@@ -180,8 +181,13 @@ partToPair (Part contentType encoding disposition headers (PartContent content))
       $ (case disposition of
             AttachmentDisposition fn ->
                 (:) ("Content-Disposition", "attachment; filename=" `T.append` fn)
-            InlineDisposition cid ->
-                (:) ("Content-Disposition", "inline; filename=" `T.append` cid) . (:) ("Content-ID", "<" <> cid <> ">") . (:) ("Content-Location", cid)
+            InlineDisposition cid fn ->
+                (:) ("Content-Disposition", "inline" <> 
+                        case fn of 
+                          Just fn' -> "; filename=" `T.append` fn'
+                          Nothing -> mempty) 
+              . (:) ("Content-ID", "<" <> cid <> ">") 
+              . (:) ("Content-Location", cid)
             DefaultDisposition -> id
         )
       $ headers
@@ -558,7 +564,7 @@ addImage InlineImage{..} = do
                 ImageFilePath fn -> L.readFile fn
                 ImageByteString bs -> return bs
     return
-      $ Part imageContentType Base64 (InlineDisposition imageCID) [] (PartContent content)
+      $ Part imageContentType Base64 (InlineDisposition imageCID Nothing) [] (PartContent content)
 
 mkImageParts :: [InlineImage] -> IO [Part]
 mkImageParts xs =
@@ -575,10 +581,6 @@ addAttachmentBS ct fn content mail =
     let part = Part ct Base64 (AttachmentDisposition fn) [] (PartContent content)
     in addPart [part] mail
 
-{-
-
-DAN uncomment soon
-
 -- | @since 0.4.12
 addAttachmentBSCid :: Text -- ^ content type
                    -> Text -- ^ file name
@@ -586,19 +588,8 @@ addAttachmentBSCid :: Text -- ^ content type
                    -> Text -- ^ content ID
                    -> Mail -> Mail
 addAttachmentBSCid ct fn content cid mail =
-    let part = addHeader $ getAttachmentPartBS ct fn content
+    let part = Part ct Base64 (InlineDisposition cid (Just fn)) [] (PartContent content)
     in addPart [part] mail
-    where
-      addHeader part = part { 
-          partHeaders = headers <> ph 
-        }
-        where ph = partHeaders part
-      headers = [
-          ("Content-ID", T.concat ["<", cid, ">"])
-        , ("Content-Disposition", "inline; filename=" `T.append` fn)
-        ]
-
--}
 
 -- |
 -- Since 0.4.7
