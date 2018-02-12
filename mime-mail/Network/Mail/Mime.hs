@@ -29,7 +29,6 @@ module Network.Mail.Mime
     , addAttachment
     , addAttachments
     , addAttachmentBS
-    , addAttachmentBSCid
     , addAttachmentsBS
     , renderAddress
     , htmlPart
@@ -40,7 +39,6 @@ module Network.Mail.Mime
     , ImageContent(..)
     , relatedPart
     , addImage
-    , mkImageParts
     ) where
 
 import qualified Data.ByteString.Lazy as L
@@ -506,7 +504,7 @@ simpleMailWithImages :: [Address] -- ^ to (multiple)
            -> [(Text, FilePath)] -- ^ content type and path of attachments
            -> IO Mail
 simpleMailWithImages to from subject plainBody htmlBody images attachments = do
-    inlineImageParts <- mkImageParts images
+    inlineImageParts <- mapM addImage images
     addAttachments attachments
       . addPart [ plainPart plainBody
                 , relatedPart ((htmlPart htmlBody):inlineImageParts) ]
@@ -566,10 +564,6 @@ addImage InlineImage{..} = do
     return
       $ Part imageContentType Base64 (InlineDisposition imageCID Nothing) [] (PartContent content)
 
-mkImageParts :: [InlineImage] -> IO [Part]
-mkImageParts xs =
-    mapM addImage xs
-
 -- | Add an attachment from a 'ByteString' and construct a 'Part'.
 --
 -- Since 0.4.7
@@ -581,17 +575,6 @@ addAttachmentBS ct fn content mail =
     let part = Part ct Base64 (AttachmentDisposition fn) [] (PartContent content)
     in addPart [part] mail
 
--- | @since 0.4.12
-addAttachmentBSCid :: Text -- ^ content type
-                   -> Text -- ^ file name
-                   -> L.ByteString -- ^ content
-                   -> Text -- ^ content ID
-                   -> Mail -> Mail
-addAttachmentBSCid ct fn content cid mail =
-    let part = Part ct Base64 (InlineDisposition cid (Just fn)) [] (PartContent content)
-    in addPart [part] mail
-
--- |
 -- Since 0.4.7
 addAttachmentsBS :: [(Text, Text, L.ByteString)] -> Mail -> Mail
 addAttachmentsBS xs mail = foldl fun mail xs
