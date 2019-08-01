@@ -632,7 +632,7 @@ toQP isText = go
 
 quotedPrintableMaxLineLength :: Int
 -- quotedPrintableMaxLineLength = 75
-quotedPrintableMaxLineLength = 72
+quotedPrintableMaxLineLength = 73
 
 buildQPs :: [QP] -> Builder
 buildQPs = go 0
