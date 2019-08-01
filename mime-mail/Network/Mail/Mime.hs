@@ -39,12 +39,14 @@ module Network.Mail.Mime
     , ImageContent(..)
     , relatedPart
     , addImage
+    , quotedPrintableMaxLineLength
     ) where
 
 import qualified Data.ByteString.Lazy as L
 import Blaze.ByteString.Builder.Char.Utf8
 import Blaze.ByteString.Builder
 import Control.Concurrent (forkIO, putMVar, takeMVar, newEmptyMVar)
+import Data.Bifunctor (bimap)
 import Data.Monoid
 import System.Random
 import Control.Arrow
@@ -598,88 +600,84 @@ data QPC = QPCCR
 toQP :: Bool -- ^ text?
      -> L.ByteString
      -> [QP]
-toQP isText =
-    go
+toQP isText = go
   where
     go lbs =
         case L.uncons lbs of
             Nothing -> []
             Just (c, rest) ->
                 case toQPC c of
-                    QPCCR -> go rest
-                    QPCLF -> QPNewline : go rest
-                    QPCSpace -> QPSpace : go rest
-                    QPCTab -> QPTab : go rest
-                    QPCPlain ->
-                        let (x, y) = L.span ((== QPCPlain) . toQPC) lbs
-                         in QPPlain (toStrict x) : go y
-                    QPCEscape ->
-                        let (x, y) = L.span ((== QPCEscape) . toQPC) lbs
-                         in QPEscape (toStrict x) : go y
+                    QPCCR     ->              go rest
+                    QPCLF     -> QPNewline  : go rest
+                    QPCSpace  -> QPSpace    : go rest
+                    QPCTab    -> QPTab      : go rest
+                    QPCPlain  -> QPPlain s  : go rest'
+                        where (s, rest') = plainRun lbs
+                    QPCEscape -> QPEscape s : go rest'
+                        where (s, rest') = escapedRun lbs
 
-    toStrict = S.concat . L.toChunks
+    plainRun   = bimap toStrict id . L.span ((== QPCPlain) . toQPC)
+    escapedRun = bimap toStrict id . L.span ((== QPCEscape) . toQPC)
 
     toQPC :: Word8 -> QPC
-    toQPC 13 | isText = QPCCR
-    toQPC 10 | isText = QPCLF
-    toQPC 9 = QPCTab
-    toQPC 0x20 = QPCSpace
-    toQPC 46 = QPCEscape
-    toQPC 61 = QPCEscape
+    toQPC 0x0D | isText = QPCCR       -- carriage return
+    toQPC 0x0A | isText = QPCLF       -- newline
+    toQPC 0x09          = QPCTab      -- hard tab
+    toQPC 0x20          = QPCSpace    -- space character
+    toQPC 0x2E          = QPCEscape   -- period
+    toQPC 0x3D          = QPCEscape   -- equals
     toQPC w
-        | 33 <= w && w <= 126 = QPCPlain
-        | otherwise = QPCEscape
+        | 0x21 <= w && w <= 0x7E = QPCPlain
+        | otherwise              = QPCEscape
+
+quotedPrintableMaxLineLength :: Int
+-- quotedPrintableMaxLineLength = 75
+quotedPrintableMaxLineLength = 73
 
 buildQPs :: [QP] -> Builder
-buildQPs =
-    go (0 :: Int)
+buildQPs = go 0
   where
-    go _ [] = mempty
+    maxCol = quotedPrintableMaxLineLength
+
+    go :: Int -> [QP] -> Builder
+    go _ []              = mempty
     go currLine (qp:qps) =
         case qp of
-            QPNewline -> copyByteString "\r\n" `mappend` go 0 qps
-            QPTab -> wsHelper (copyByteString "=09") (fromWord8 9)
-            QPSpace -> wsHelper (copyByteString "=20") (fromWord8 0x20)
+            QPNewline  -> copyByteString "\r\n" `mappend` go 0 qps
+            QPTab      -> wsHelper (copyByteString "=09") (fromWord8 0x09)
+            QPSpace    -> wsHelper (copyByteString "=20") (fromWord8 0x20)
             QPPlain bs ->
-                let toTake = 75 - currLine
+                let toTake = maxCol - currLine
                     (x, y) = S.splitAt toTake bs
                     rest
                         | S.null y = qps
                         | otherwise = QPPlain y : qps
-                 in helper (S.length x) (copyByteString x) (S.null y) rest
+                in helper (S.length x) (copyByteString x) (S.null y) rest
             QPEscape bs ->
-                let toTake = (75 - currLine) `div` 3
+                let toTake = (maxCol - currLine) `div` 3
                     (x, y) = S.splitAt toTake bs
                     rest
                         | S.null y = qps
                         | otherwise = QPEscape y : qps
-                 in if toTake == 0
+                in if toTake == 0
                         then copyByteString "=\r\n" `mappend` go 0 (qp:qps)
                         else helper (S.length x * 3) (escape x) (S.null y) rest
       where
-        escape =
-            S.foldl' add mempty
-          where
-            add builder w =
-                builder `mappend` escaped
-              where
-                escaped = fromWord8 61 `mappend` hex (w `shiftR` 4)
-                                       `mappend` hex (w .&. 15)
+        escape = S.foldl' (\b w -> b `mappend` hexEncode w) mempty
 
-        helper added builder noMore rest =
-            builder' `mappend` go newLine rest
-           where
-             (newLine, builder')
-                | not noMore || (added + currLine) >= 75 =
+        helper added builder noMore rest = builder' `mappend` go newLine rest
+          where
+            (newLine, builder')
+                | not noMore || (added + currLine) >= maxCol =
                     (0, builder `mappend` copyByteString "=\r\n")
                 | otherwise = (added + currLine, builder)
 
         wsHelper enc raw
             | null qps =
-                if currLine <= 73
+                if currLine <= maxCol - 2
                     then enc
                     else copyByteString "\r\n=" `mappend` enc
-            | otherwise = helper 1 raw (currLine < 76) qps
+            | otherwise = helper 1 raw (currLine < maxCol + 1) qps
 
 -- | The first parameter denotes whether the input should be treated as text.
 -- If treated as text, then CRs will be stripped and LFs output as CRLFs. If
@@ -687,10 +685,16 @@ buildQPs =
 quotedPrintable :: Bool -> L.ByteString -> Builder
 quotedPrintable isText = buildQPs . toQP isText
 
-hex :: Word8 -> Builder
-hex x
-    | x < 10 = fromWord8 $ x + 48
-    | otherwise = fromWord8 $ x + 55
+toStrict = S.concat . L.toChunks
+
+hexEncode w = fromWord8 0x3D `mappend` hexByte w
+
+hexByte w = hexNibble (w `shiftR` 4) `mappend` hexNibble (w .&. 0x0F)
+
+hexNibble :: Word8 -> Builder
+hexNibble x
+    | x < 10    = fromWord8 $ x + 0x30
+    | otherwise = fromWord8 $ x + 0x37
 
 encodeIfNeeded :: Text -> Builder
 encodeIfNeeded t =
@@ -733,18 +737,21 @@ encodedWord t = mconcat
     go' w
         | 33 <= w && w <= 126 = fromWord8 w
         | otherwise = go'' w
-    go'' w = fromWord8 61 `mappend` hex (w `shiftR` 4)
-                          `mappend` hex (w .&. 15)
+    go'' w = hexEncode w
 
 -- 57 bytes, when base64-encoded, becomes 76 characters.
 -- Perform the encoding 57-bytes at a time, and then append a newline.
 base64 :: L.ByteString -> Builder
 base64 lbs
     | L.null lbs = mempty
-    | otherwise = fromByteString x64 `mappend`
-                  fromByteString "\r\n" `mappend`
-                  base64 y
+    | otherwise  = fromByteString encodedBytes `mappend`
+                   fromByteString "\r\n" `mappend`
+                   base64 y
   where
-    (x', y) = L.splitAt 57 lbs
-    x = S.concat $ L.toChunks x'
-    x64 = Base64.encode x
+    -- 3 bytes turn into 4 under base64 encoding. 
+    -- Derive maximum number of bytes per line from
+    -- the desired maximum length of encoded line.
+    maxCol  = 76
+    maxByte = (maxCol `div` 4) * 3
+    (x, y)  = L.splitAt maxByte lbs
+    encodedBytes = Base64.encode (toStrict x)
