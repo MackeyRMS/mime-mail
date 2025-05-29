@@ -551,9 +551,12 @@ htmlPart body = Part cType QuotedPrintableText DefaultDisposition []
 addAttachment :: Text -> FilePath -> Mail -> IO Mail
 addAttachment ct fn mail = do
     content <- L.readFile fn
-    let part = Part ct Base64 (AttachmentDisposition . LT.toStrict . LT.decodeUtf8 . toLazyByteString . rfc5987Encode $ takeFileName fn) []
+    let part = Part ct Base64 (AttachmentDisposition . encodeAttachmentFilename $ takeFileName fn) []
                   (PartContent content)
     return $ addPart [part] mail
+
+encodeAttachmentFilename :: FilePath -> Text
+encodeAttachmentFilename = LT.toStrict . LT.decodeUtf8 . toLazyByteString . rfc5987Encode
 
 addAttachments :: [(Text, FilePath)] -> Mail -> IO Mail
 addAttachments xs mail = foldM fun mail xs
@@ -576,7 +579,7 @@ addAttachmentBS :: Text -- ^ content type
                 -> L.ByteString -- ^ content
                 -> Mail -> Mail
 addAttachmentBS ct fn content mail =
-    let part = Part ct Base64 (AttachmentDisposition fn) [] (PartContent content)
+    let part = Part ct Base64 (AttachmentDisposition . encodeAttachmentFilename $ T.unpack fn) [] (PartContent content)
     in addPart [part] mail
 
 -- Since 0.4.7

@@ -1,4 +1,4 @@
-resolver: lts-8.16
+resolver: lts-22.44
 packages:
 - mime-mail/
 - mime-mail-ses/
