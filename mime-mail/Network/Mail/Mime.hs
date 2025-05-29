@@ -40,6 +40,8 @@ module Network.Mail.Mime
     , relatedPart
     , addImage
     , quotedPrintableMaxLineLength
+    , encodedWord
+    , rfc5987Encode
     ) where
 
 import qualified Data.ByteString.Lazy as L
@@ -549,7 +551,7 @@ htmlPart body = Part cType QuotedPrintableText DefaultDisposition []
 addAttachment :: Text -> FilePath -> Mail -> IO Mail
 addAttachment ct fn mail = do
     content <- L.readFile fn
-    let part = Part ct Base64 (AttachmentDisposition $ T.pack (takeFileName fn)) []
+    let part = Part ct Base64 (AttachmentDisposition . LT.toStrict . LT.decodeUtf8 . toLazyByteString . rfc5987Encode $ takeFileName fn) []
                   (PartContent content)
     return $ addPart [part] mail
 
@@ -704,6 +706,27 @@ encodeIfNeeded t =
 
 needsEncodedWord :: Text -> Bool
 needsEncodedWord = not . T.all isAscii
+
+-- The surrounding quotes are optional but harmless to always include.
+-- ghci> rfc5987Encode "Unicode-in-name-€.docx"
+-- "\"UTF-8''Unicode-in-name-%E2%82%AC.docx\""
+-- ghci> rfc5987Encode "LoginControlsдсаш.docx"
+-- "\"UTF-8''LoginControls%D0%B4%D1%81%D0%B0%D1%88.docx\""
+
+rfc5987Encode :: [Char] -> Builder
+rfc5987Encode t = mconcat
+    [ fromByteString $ "\"" <> "UTF-8''"
+    -- Convert all non-ASCII characters in t to hex codes prefixed with "%".
+    , mconcat $ map (\w ->
+                          let w' = TE.encodeUtf8 $ T.pack [w]
+                          in if isAscii w
+                              then fromByteString w'
+                              else mconcat $ percentHexEncode <$> S.unpack w')
+                    $ t
+    , fromByteString "\""
+    ]
+
+percentHexEncode w = "%" <> hexByte w
 
 encodedWord :: Text -> Builder
 encodedWord t = mconcat
