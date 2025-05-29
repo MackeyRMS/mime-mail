@@ -182,7 +182,7 @@ partToPair (Part contentType encoding disposition headers (PartContent content))
                 (:) ("Content-Transfer-Encoding", "quoted-printable"))
       $ (case disposition of
             AttachmentDisposition fn ->
-                (:) ("Content-Disposition", "attachment; filename=" `T.append` fn)
+                (:) ("Content-Disposition", "attachment; filename*=" `T.append` fn)
             InlineDisposition cid fn ->
                 (:) ("Content-Disposition", "inline" <> 
                         case fn of 
